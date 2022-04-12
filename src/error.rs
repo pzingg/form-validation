@@ -1,7 +1,10 @@
 use std::{
+    collections::HashMap,
     fmt::{Debug, Display},
+    hash::Hash,
     rc::Rc,
 };
+use serde::{Serialize, Serializer, ser::SerializeMap};
 
 /// An error associated with a form field.
 pub struct ValidationError<Key> {
@@ -34,6 +37,22 @@ where
             type_id: self.type_id,
             message: self.message.clone(),
         }
+    }
+}
+
+impl<Key> Serialize for ValidationError<Key>
+where
+    Key: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(3))?;
+        map.serialize_entry("key", &self.key)?;
+        map.serialize_entry("type_id", &self.type_id)?;
+        map.serialize_entry("message", &self.get_message())?;
+        map.end()
     }
 }
 
@@ -121,6 +140,61 @@ where
 {
     fn eq(&self, other: &Self) -> bool {
         self.errors.eq(&other.errors)
+    }
+}
+
+impl<Key> Serialize for ValidationErrors<Key>
+where
+    Key: Serialize + Clone + Eq + Hash,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let error_map: HashMap<Key, Vec<ValidationError<Key>>> = self.clone().into();
+        let mut map = serializer.serialize_map(Some(error_map.len()))?;
+        for (k, v) in error_map {
+            map.serialize_entry(&k, &v)?;
+        }
+        map.end()
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl<Key> Into<HashMap<Key, Vec<ValidationError<Key>>>> for ValidationErrors<Key>
+    where Key: Clone + Eq + Hash,
+{
+    /// By converting to a HashMap, you can serialize a ValidationErrors object.
+    /// Also, note that you can serialize a single ValidationError this way.
+    ///
+    /// ## Example
+    /// ```
+    /// use std::collections::HashMap;
+    /// use form_validation::{ValidationError, ValidationErrors};
+    /// use serde_json::json;
+    ///
+    /// let value = -10;
+    /// let errors: ValidationErrors<&str> = ValidationError::new("field1", "NOT_LESS_THAN_0")
+    ///     .with_message(move |key| {
+    ///         format!(
+    ///            "The value of {} ({}) cannot be less than 0",
+    ///             key, value)
+    ///     }).into();
+    ///
+    /// let error_map: HashMap<&str, Vec<ValidationError<&str>>> = errors.into();
+    /// let json_map = json!(error_map);
+    ///
+    /// assert_eq!(json_map["field1"][0]["message"], "The value of field1 (-10) cannot be less than 0");
+    /// assert_eq!(json_map["field1"][0]["type_id"], "NOT_LESS_THAN_0");
+    /// ```
+    fn into(self) -> HashMap<Key, Vec<ValidationError<Key>>> {
+        let mut res: HashMap<Key, Vec<ValidationError<Key>>> = HashMap::new();
+        for error in self.errors.iter() {
+            res.entry(error.key.clone())
+                .and_modify(|e| { e.push((*error).clone()) })
+                .or_insert_with(|| vec![(*error).clone()]);
+        }
+        res
     }
 }
 
